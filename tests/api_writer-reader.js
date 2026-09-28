@@ -129,6 +129,53 @@ tape.test("writer & reader", function(test) {
         test.end();
     });
 
+    test.throws(function() {
+      const root = protobuf.Root.fromJSON({
+        nested: {
+          MyMessage: {
+            fields: {
+              name: { type: "string", id: 1 }
+            }
+          }
+        }
+      });
+      const MyMessage = root.lookupType("MyMessage");
+      // 0x7B (field 15, wire type 3 = start group)
+      const payload = Buffer.alloc(50000, 0x7B);
+      MyMessage.decode(payload);
+    }, /maximum nesting depth exceeded/, "limits recursion in reader");
+
+    test.test(test.name + " - should not decode overlong utf8 strings", function(test) {
+        var root = protobuf.Root.fromJSON({
+            nested: {
+                MyMessage: {
+                    fields: {
+                        name: { type: "string", id: 1 }
+                    }
+                }
+            }
+        });
+        var MyMessage = root.lookupType("MyMessage");
+
+        // field 1, wire type 2, overlong encoding of "../" followed by "x"
+        var bytes = new Uint8Array([0x0A, 0x07, 0xC0, 0xAE, 0xC0, 0xAE, 0xC0, 0xAF, 0x78]);
+        var reader = Reader.create(bytes);
+        test.notOk(reader instanceof protobuf.BufferReader, "should use the non-native reader");
+        test.equal(reader.uint32(), 0x0A, "should read the tag");
+        test.equal(reader.string(), "\ufffd\ufffd\ufffdx", "should read overlong sequences as replacement characters");
+
+        test.equal(MyMessage.decode(new Uint8Array(bytes)).name, "\ufffd\ufffd\ufffdx", "should decode overlong sequences as replacement characters");
+
+        // field 1, wire type 2, U+007F encoded as three bytes and >U+10FFFF encoded as four bytes
+        var outOfRange = new Uint8Array([0x0A, 0x07, 0xE0, 0x81, 0xBF, 0xF4, 0x90, 0x80, 0x80]);
+        test.equal(MyMessage.decode(outOfRange).name, "\ufffd\ufffd", "should decode out of range sequences as replacement characters");
+
+        var valid = MyMessage.encode({ name: "\u00e9\u20ac\ud83d\ude00" }).finish();
+        test.equal(MyMessage.decode(new Uint8Array(valid)).name, "\u00e9\u20ac\ud83d\ude00", "should decode shortest-form sequences unchanged");
+
+        test.end();
+    });
+
     test.end();
 });
 

@@ -16,6 +16,10 @@ tape.test("util", function(test) {
         test.same(o, { a: 2 }, "should merge existing keys");
         util.merge(o, { a: 3 }, true);
         test.same(o, { a: 2 }, "should not merge existing keys");
+        util.merge(o, JSON.parse("{\"__proto__\":{\"marker\":true}}"));
+        test.equal(Object.getPrototypeOf(o), Object.prototype, "should keep the target object shape");
+        test.notOk(Object.prototype.hasOwnProperty.call(o, "__proto__"), "should skip reserved keys");
+        test.equal(o.marker, undefined, "should not expose skipped values");
         test.end();
     });
 
@@ -104,6 +108,81 @@ tape.test("util", function(test) {
 
         util.setProperty({}, "constructor.prototype.test", "value");
         test.is({}.test, undefined);
+
+        var objectKeys = Object.keys;
+        try {
+            util.setProperty({}, "constructor.keys", "value");
+            test.equal(Object.keys, objectKeys, "should not overwrite Object constructor properties");
+        } finally {
+            Object.keys = objectKeys;
+        }
+
+        test.end();
+    });
+
+    test.test(test.name + " - safeProp", function(test) {
+        test.equal(util.safeProp("validName"), ".validName", "should use dot notation for simple names");
+        test.equal(util.safeProp("bad\nfield").indexOf("\n"), -1, "should escape line feeds");
+        test.equal(util.safeProp("bad\rfield").indexOf("\r"), -1, "should escape carriage returns");
+        test.equal(util.safeProp("bad\u0000field").indexOf("\u0000"), -1, "should escape null bytes");
+
+        var root = protobuf.Root.fromJSON({
+            nested: {
+                Message: {
+                    fields: {
+                        "bad\nfield": { type: "string", id: 1 }
+                    }
+                }
+            }
+        });
+        var Message = root.lookupType("Message");
+        var msg = Message.create({ "bad\nfield": "ok" });
+        test.same(Message.toObject(msg), { "bad\nfield": "ok" }, "should generate usable accessors");
+
+        test.end();
+    });
+
+    test.test(test.name + " - type lookups", function(test) {
+        test.equal(Object.getPrototypeOf(protobuf.types.basic), null, "should not inherit basic type lookups");
+        test.equal(Object.getPrototypeOf(protobuf.types.defaults), null, "should not inherit default value lookups");
+        test.equal(Object.getPrototypeOf(protobuf.types.long), null, "should not inherit long type lookups");
+        test.equal(Object.getPrototypeOf(protobuf.types.mapKey), null, "should not inherit map key lookups");
+        test.equal(Object.getPrototypeOf(protobuf.types.packed), null, "should not inherit packed type lookups");
+
+        test.end();
+    });
+
+    test.test(test.name + " - utf8", function(test) {
+        test.equal(util.utf8, require("../src/util/utf8"), "should use the bundled utf8 implementation");
+
+        [
+            [ [0xC0, 0x80], "U+0000 encoded as two bytes" ],
+            [ [0xC1, 0xBF], "U+007F encoded as two bytes" ],
+            [ [0xE0, 0x81, 0xBF], "U+007F encoded as three bytes" ],
+            [ [0xE0, 0x9F, 0xBF], "U+07FF encoded as three bytes" ],
+            [ [0xF0, 0x80, 0x9F, 0xBF], "U+07FF encoded as four bytes" ],
+            [ [0xF0, 0x8F, 0xBF, 0xBF], "U+FFFF encoded as four bytes" ],
+            [ [0xF4, 0x90, 0x80, 0x80], ">U+10FFFF encoded as four bytes" ]
+        ].forEach(function(vector) {
+            var bytes = vector[0];
+            test.equal(util.utf8.read(bytes, 0, bytes.length), "\ufffd", "should decode overlong or out of range sequences as replacement characters (" + vector[1] + ")");
+        });
+
+        var traversal = [0xC0, 0xAE, 0xC0, 0xAE, 0xC0, 0xAF];
+        test.equal(util.utf8.read(traversal, 0, traversal.length), "\ufffd\ufffd\ufffd", "should not decode overlong \"../\" to a path traversal sequence");
+
+        [
+            [ [0xC2, 0x80], "\u0080" ],
+            [ [0xC3, 0xA9], "\u00e9" ],
+            [ [0xE0, 0xA0, 0x80], "\u0800" ],
+            [ [0xE2, 0x82, 0xAC], "\u20ac" ],
+            [ [0xF0, 0x90, 0x80, 0x80], "\ud800\udc00" ],
+            [ [0xF0, 0x9F, 0x98, 0x80], "\ud83d\ude00" ],
+            [ [0xF4, 0x8F, 0xBF, 0xBF], "\udbff\udfff" ]
+        ].forEach(function(vector) {
+            var bytes = vector[0];
+            test.equal(util.utf8.read(bytes, 0, bytes.length), vector[1], "should decode shortest-form sequences unchanged");
+        });
 
         test.end();
     });
